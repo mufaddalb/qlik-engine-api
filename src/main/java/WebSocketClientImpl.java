@@ -4,7 +4,6 @@ import java.util.Collections;
 import java.util.List;
 import java.util.Map;
 
-import org.apache.log4j.Logger;
 import org.java_websocket.client.WebSocketClient;
 import org.java_websocket.drafts.Draft;
 import org.java_websocket.handshake.ServerHandshake;
@@ -14,8 +13,6 @@ import org.json.simple.parser.ParseException;
 
 public class WebSocketClientImpl extends WebSocketClient
 {
-  private static final Logger LOGGER = Logger.getLogger(WebSocketClientImpl.class);
-
   private List<JSONObject> messages = Collections.synchronizedList(new ArrayList<JSONObject>());
   public String cookie = null;
 
@@ -31,12 +28,9 @@ public class WebSocketClientImpl extends WebSocketClient
   @Override
   public void onOpen (ServerHandshake handshakedata)
   {
-    LOGGER.info("Connected");
     System.out.println("Connected");
     cookie = handshakedata.getFieldValue("Set-Cookie");
-    LOGGER.debug("Access-Control-Allow-Origin: " + handshakedata.getFieldValue("Access-Control-Allow-Origin"));
     System.out.println("Access-Control-Allow-Origin: " + handshakedata.getFieldValue("Access-Control-Allow-Origin"));
-    LOGGER.debug("Cookie: " + cookie);
     System.out.println("Cookie: " + cookie);
     if (cookie != null)
       cookie = cookie.replaceAll("(.*?);.*", "$1");
@@ -54,21 +48,18 @@ public class WebSocketClientImpl extends WebSocketClient
     }
     catch (ParseException e) {
       e.printStackTrace();
-      LOGGER.warn("Exception while parsing json message: ", e);
     }
   }
 
   @Override
   public void onClose (int code, String reason, boolean remote)
   {
-    LOGGER.info( "Disconnected.. code: " + code + ", reason: " + reason);
     System.out.println( "Disconnected.. code: " + code + ", reason: " + reason);
   }
 
   @Override
   public void onError (Exception ex)
   {
-    LOGGER.warn("Error occurred:", ex);
     System.out.println("Error occurred:" + ex);
   }
 
@@ -76,7 +67,6 @@ public class WebSocketClientImpl extends WebSocketClient
   {
     for (JSONObject json : getMessages())
     {
-      LOGGER.debug("gethandle: json: " + json);
       System.out.println("gethandle: json: " + json);
       JSONObject result = (JSONObject)json.get("result");
       JSONObject qReturn = (JSONObject)result.get("qReturn");
