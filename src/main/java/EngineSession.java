@@ -10,15 +10,6 @@ import org.java_websocket.drafts.Draft_17;
 
 public class EngineSession
 {
-  public static final String OPEN_DOC = "OpenDoc";
-  public static final String X_QLIK_XRFKEY = "x-Qlik-Xrfkey";
-  public static final String QLIK_XRFKEY = "abcdefghijklmnop";
-  public static final String IV_USER = "iv-user";
-  public static final String SLASH_IV = "/iv";
-  public static final String EQUAL = "=";
-  public static final String QUESTION_MARK = "?";
-  public static final String XRFKEY = "Xrfkey";
-
   // This map stores the <userid, cookie> pair
   private static Map<String, String> userCookieMap;
   static {
@@ -64,17 +55,17 @@ public class EngineSession
   {
     WebSocketClientImpl webSocketClient = null;
 
-    String xrfKey = QLIK_XRFKEY;
+    String xrfKey = "abcdefghijklmnop";
 
     Map<String, String> headers = new HashMap<String, String>();
-    headers.put(IV_USER, userid);
-    headers.put(X_QLIK_XRFKEY,  xrfKey);
+    headers.put("iv-user", userid);
+    headers.put("x-Qlik-Xrfkey",  xrfKey);
     if (cookie != null)
       headers.put("Cookie", cookie);
 
     System.out.println("OpenConnection: headers: " + headers);
 
-    String uri = "ws://" + host + SLASH_IV + "/app/%3Ftransient%3D" + QUESTION_MARK + XRFKEY + EQUAL + xrfKey;
+    String uri = "ws://" + host + "/iv/app/%3Ftransient%3D?Xrfkey=" + xrfKey;
     System.out.println("OpenConnection: uri: " + uri);
 
     // Connect to QlikSense using WebSocket connections
