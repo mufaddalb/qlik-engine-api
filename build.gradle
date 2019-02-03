@@ -1,0 +1,1523 @@
+buildscript {
+    scriptHandler -> apply from: 'devtools/targets/repos.gradle', to: scriptHandler
+ }
+
+plugins {
+    id "org.sonarqube" version "2.5"
+    id "de.undercouch.download" version "3.4.3"
+}
+
+apply from: 'devtools/targets/common.gradle'
+
+/* these are some utility functions used in the process of creating e2pkgs */
+
+// Search comp_dependencies to find package build for a given root:component combination
+def compDependency(root, component) {
+    def start = "$root:$component"
+    def compDependencies = file('im/sysbuild/comp_dependencies')
+    def line = compDependencies.readLines().find {
+        it.startsWith(start)
+    }
+    if (line) {
+        return line
+    }
+    throw new InvalidUserDataException("Could not find $root:$component in $compDependencies")
+}
+
+def compDependencyDirectory(line) {
+    def parts = line.split(':')
+    def dir = file("/e2open/pkgs/${parts[0]}/build/${parts[2]}/${parts[1]}")
+    if (dir.exists()) {
+        return dir;
+    } else {
+        return null;
+    }
+}
+
+def packageDirectory(root, component) {
+    return compDependencyDirectory(compDependency(root, component))
+}
+
+configurations {
+    cpcCommonJar { transitive = false } 
+    cpcCommonJarForCognos { transitive = false } 
+    jaxb1ImplJars { transitive = false } 
+    serializerJar { transitive = false } 
+    struts2TagLibJar { transitive = true } 
+    struts2Jar { transitive = true } 
+    commonsHttpClientJar { transitive = false } 
+    commonsFileUploadJar { transitive = false } 
+    commonsLangJar { transitive = false } 
+    mbeanCommonJar { transitive = false } 
+    ip2LocationJars { transitive = true } 
+    jacksonJars { transitive = true } 
+}
+
+dependencies {
+    compile group: 'org.apache.httpcomponents', name: 'httpclient', version: '4.5.6'
+    // struts2Jar pulled in commons-io.2.2.jar, which is good enough. No need to have it separately.
+    cpcCommonJar compile(group: 'com.e2open.platform.cpc', name: 'cpc-common', version: '18.4-1829') {
+        exclude group: 'commons-io', module: 'commons-io'
+        exclude group: 'commons-collections', module: 'commons-collections'
+        exclude group: 'commons-beanutils', module: 'commons-beanutils'
+	}
+
+    cpcCommonJarForCognos group: 'com.e2open.platform.cpc', name: 'cpc-common', version: '8.1-1610'
+    serializerJar group: 'xalan', name: 'serializer', version: '2.7.2'
+    jaxb1ImplJars group: 'com.sun.xml.bind', name: 'jaxb1-impl', version: '2.1.13'    
+    struts2Jar compile(group: 'org.apache.struts', name: 'struts2-core', version: '2.3.34') {
+        exclude group: 'commons-fileupload', module: 'commons-fileupload'
+    }
+    commonsFileUploadJar group: 'commons-fileupload', name: 'commons-fileupload', version: '1.3.3'
+    commonsHttpClientJar group: 'commons-httpclient', name: 'commons-httpclient', version: '3.0.1'
+    commonsLangJar group: 'commons-lang', name: 'commons-lang', version: '2.6'
+    mbeanCommonJar group: 'com.e2open.platform', name: 'mbean-common', version: '9.0-1111'
+    jacksonJars group: 'com.fasterxml.jackson.core', name: 'jackson-databind', version:'2.9.5'		
+    ip2LocationJars compile(group: 'com.e2open.ip2Location', name: 'ip2Location-client', version: '1.0.0-1020') {
+        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-databind'		
+        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-core'		
+        exclude group: 'com.fasterxml.jackson.core', module: 'jackson-annotations'		
+    } 
+}
+
+
+allprojects {
+    apply plugin: "java"
+    apply plugin: "maven-publish"
+    apply plugin: "maven"
+    apply plugin: "eclipse"
+    apply plugin: "idea"
+    apply plugin: 'com.jfrog.artifactory'
+
+    /* General Properties for all Projects */
+    group = "com.e2open.im"
+    version = "19.1-SNAPSHOT"
+    buildDir = "target"
+
+    ext.tmNativeE2scInstaller = packageDirectory('e2sc', 'TM-Native/e2sc/installer')
+    ext.platformCpcLogging = packageDirectory('cpc_main', 'platform/cpc/logging')
+    ext.platformCpcE2uitaglib = packageDirectory('cpc_main', 'platform/cpc/e2uitaglib')
+    ext.platformCpcMonitoring = packageDirectory('cpc_main', 'platform/cpc/monitoring')
+    ext.platformE2am = packageDirectory('e2am', 'platform');
+
+
+/* configuration the artifactory plugin for the artifactoryPublish task */
+
+    artifactory {
+        contextUrl = "${artifactory_contextUrl}"   //The base Artifactory URL obtained from gradle.properties
+
+        publish {
+            repository {
+                repoKey = 'e2open-release-dev'
+                username = "${artifactory_user}"
+                password = "${artifactory_password}"
+                maven = true
+            
+            }
+            defaults {
+                //This closure defines defaults for all 'artifactoryPublish' tasks of all projects the plugin is applied to
+
+                publications ('mavenJava')
+                publishBuildInfo = false   //Publish build-info to Artifactory (true by default)
+                publishArtifacts = true   //Publish artifacts to Artifactory (true by default)
+                publishPom = true   //Publish generated POM files to Artifactory (true by default).
+
+            }
+
+        } // end publish
+
+        resolve {
+           repository {
+                repoKey = 'libs-n-dev'
+                username = "${artifactory_user}"
+                password = "${artifactory_password}"
+                maven = true
+            
+            }
+        }
+
+        clientConfig.info.setBuildName('analytics')
+        clientConfig.info.setBuildNumber(version)
+
+    } // end artifactory 
+}
+
+
+
+//Add sonar plugin to only root projects not subprojects.
+apply plugin: "sonar-runner"
+
+sonarRunner {
+    sonarProperties {
+        property "sonar.host.url", "http://sonar.dev.e2open.com"
+        property "sonar.jdbc.url",
+                "jdbc:mysql://dell-dsc-07-01.dev.e2open.com:3306/sonardb?useUnicode=true&amp;characterEncoding=utf8&amp;rewriteBatchedStatements=true"
+        property "sonar.jdbc.username", "sonar_usr"
+        property "sonar.jdbc.password", "e2sbsosr"
+        property "sonar.analysis.mode", "preview"
+        property "sonar.jacoco.reportPath", "$buildDir/jacoco/test.exec"
+    }
+}
+
+def now = new Date()
+def gmt = TimeZone.getTimeZone('GMT')
+String buildnum = System.properties['buildnum'] ?: now.format('yyyyMMddHHmm', gmt)
+
+import build.*
+
+subprojects {
+    apply plugin: "java"
+    apply plugin: "maven-publish"
+    apply plugin: "jacoco"
+    apply plugin: 'maven'
+
+    configurations {
+        deployerJars
+    }
+
+    repositories {
+        maven {
+          url 'https://artifactory.dev.e2open.com/artifactory/libs-n-dev'
+        }
+    }
+
+    dependencies {
+        testCompile group: "org.testng", name: "testng", version: "6.2"
+
+		// Fix Mockito to be able to mock groovy classes.
+		// Apparently mockito-groovy-support
+	        // must be on the class path before the main mockito jar.
+		// 
+		// AFAIK, there is no easy way for a subproject to insert
+		// a dependency ahead of the dependencies listed here,
+		// so I added mockito-groovy-support here - kc
+		testCompile 'com.cyrusinnovation:mockito-groovy-support:1.3'
+        testCompile group: "org.mockito", name: "mockito-all", version: "1.9.0"
+        deployerJars "org.apache.maven.wagon:wagon-ssh:2.2"
+
+        // pull in latest jacoco so our groovy tests get instrumented correctly
+        testCompile 'org.jacoco:org.jacoco.agent:0.7.1.201405082137'
+        testCompile 'org.jacoco:org.jacoco.ant:0.7.1.201405082137'
+    }
+
+    tasks.withType(GroovyCompile) {
+        options.debug(debugLevel: 'lines,source,vars')
+        // java.home is a Java system property pointing to the locally running jre directory
+        // java.home is basically the same as JAVA_HOME/jre, except that JAVA_HOME is an environment variable
+        // and the currently running JDK might not be the one from JAVA_HOME (Eclipse could use a different
+        // JDK than the one set in JAVA_HOME)
+        // rt.jar is needed for java.* packages. jsse.jar is for javax.* packages.
+
+        JdkSelector jdkSelector = JdkSelector.create()
+        options.bootClasspath = jdkSelector.getBootstrapClassPath(JdkVersion.JDK_1_8)
+        if (null == options.bootClasspath) {
+            throw new RuntimeException("bootClasspath not set")
+        }
+    }
+
+    tasks.withType(JavaCompile) {
+        options.debug(debugLevel: 'lines,source,vars')
+
+        JdkSelector jdkSelector = JdkSelector.create()
+        options.bootClasspath = jdkSelector.getBootstrapClassPath(JdkVersion.JDK_1_8)
+        if (null == options.bootClasspath) {
+            throw new RuntimeException("bootClasspath not set")
+        }
+    }
+
+    tasks.withType(JavaCompile) {
+        it.doLast {
+            println project.name + " bootClasspath: " + options.bootClasspath
+        }
+    }
+
+// for all projects, define a task that runs an HP Fortify Scan on the project's java files
+    allprojects {
+      task ('sca') {
+
+        description "Run an HP Fortify Scan on the Java files"
+
+        doLast {
+          def sourceCompatibility='1.7'
+
+          // *********************************************************************************
+          // run the external executable to do a 'translate'
+          println "SCA TRANSLATE"
+
+          def String sources = project.name + "/src/main/**/*.java"
+  
+          def commandLine = ['sourceanalyzer', '-verbose', '-debug', '-b', buildId, '-source', sourceCompatibility, '-cp', sourceSets.main.compileClasspath.getAsPath(), sources]
+
+          def process = new ProcessBuilder(commandLine)
+                                    .directory(new File("."))
+                                    .redirectErrorStream(true) 
+                                    .start()
+          process.inputStream.eachLine {println it}
+          process.waitFor();
+          // fail the build if the return value is non-zero
+          assert process.exitValue() == 0
+        }
+      }
+    }
+
+    sonarRunner {
+        sonarProperties {
+            property "sonar.junit.reportsPath", "$buildDir/test-results/"
+        }
+    }
+
+    test.dependsOn processTestResources
+
+    jacoco {
+         toolVersion = "0.7.1.201405082137"
+     }
+
+    test {
+        useTestNG() {
+            // useDefaultListeneres is needed to generate target/reports/tests/testng-results.xml which is consumed by bamboo
+            useDefaultListeners = true
+        }
+
+        // listen to events in the test execution lifecycle
+/*        beforeTest { descriptor ->
+            logger.lifecycle("Running test: " + descriptor)
+        }
+
+	  // listen to standard out and standard error of the test JVM(s)
+	  onOutput { descriptor, event ->
+	  logger.lifecycle("Test: " + descriptor + " produced standard out/err: " + event.message)
+	  }
+
+	  testLogging.showStandardStreams = true
+	*/
+
+    jacoco {
+         append = false
+         destinationFile = file("$buildDir/jacoco/test.exec")
+         classDumpFile = file("$buildDir/jacoco/classpathdumps")
+     }
+
+
+    }
+
+}
+
+//task createArchivaKeepList(type: build.ArchivaKeepListTask) {
+//    path = keepListPath
+//}
+/**
+ * Creates an XML file that records all of the dependencies that we need to build.  This task is run
+ * on the Bamboo server via 'gradle createArchivaKeepList -PkeepListPath=~cmbuild/keep_lists/IM/IM.xml'.
+ * This will write the keep list to a known destination, which is later parsed by cmbuild scripts so
+ * that they know not to purge our dependencies from Archiva.
+ */
+task createArchivaKeepList << {
+    // we write first to a temp file to avoid collision between this file being created and the job that reads it
+    File tempFile = File.createTempFile("archiva-keep-list-", ".xml");
+    println "Writing KeepArtifact XML stanzas to $tempFile.canonicalPath"
+    tempFile.deleteOnExit();
+
+    def writer = new FileWriter(tempFile)
+    def xml = new groovy.xml.MarkupBuilder(writer)
+    subprojects.each { subproject ->
+        println "writing dependencies for $subproject"
+        subproject.configurations.each { configuration ->
+            configuration.dependencies.each { dep ->
+                // Filter out non com.e2open* groupsIds.
+                // We do not remove ANY 3rdparty artifacts at this time, only e2open built artifacts.
+                if (dep.group && dep.group.startsWith("com.e2open")) {
+                    xml.keepArtifact() {
+                        groupId(dep.group)
+                        artifactId(dep.name)
+                        delegate.version(dep.version)
+                    }
+                }
+            }
+        }
+    }
+    writer.close();
+
+    File keepListFile = new File(keepListPath)
+    println "Copying KeepArtifact XML stanzas to $keepListFile.canonicalPath"
+    keepListFile << tempFile.text
+}
+
+
+// old ant properties, mostly not renamed
+def onWindows = System.getProperty("os.name").toLowerCase().contains("windows")
+def onMac = System.getProperty("os.name").toLowerCase().contains("mac")
+
+def packageRoot = file('im')
+def installer = file("${packageRoot}/installer")
+def imHome = file("${installer}/im")
+def stagingAgent = file("${installer}/imAgent_jboss")
+def stagingE2aAdapter = file("${installer}/e2aAdapter")
+def baseDatasetSrc = file("${installer}/im/hubs/base")
+def buildSrc = file("${packageRoot}/src")
+def build = file("${packageRoot}/build") // temporary directory for build artifacts
+def buildLib = file("${build}/lib")   // temporary subdirectory for build artifacts
+def serverClasses = file("server/target/classes/main")
+def commonClasses = file("common/target/classes/main")
+def zipTmp = file("${build}/tmp")
+def designerTmpDir = file("${build}/designertmp")
+
+def agentZipTmp = "${build}/agenttmp"
+
+def e2aAdapterImplRoot = file('e2a-adapter-impl')
+
+def buildTime = now.format('HH:mm:ss z', gmt)
+def buildDate = now.format('yyyy-MM-dd', gmt)
+def hostname
+try {
+    hostname = InetAddress.localHost.hostName ?: 'UNKNOWN'
+} catch (java.net.UnknownHostException e) {
+    hostname = 'UNKNOWN'
+}
+
+configurations {
+    prepare
+}
+
+clean.delete(build)
+
+// for this project and each subproject do
+allprojects {
+
+  // this task lists out the dependencies
+    task listExternals << {
+      println "Configurations: "
+      // for each configuration defined in the project
+      configurations.each {
+          println " ${it.name} Dependencies: "
+          configurations[it.name].each { file ->
+              println "     ${file.name}"
+          }
+      }
+    }
+}
+
+// collect all 3rd party dependencies into a directory for the purpose of 3rd party scanning
+def libfiles = "${projectDir}/COLLECTED"
+
+// in this project and all subprojects do
+allprojects {
+  if (!it.name.startsWith('selenium') &&
+      !it.name.startsWith('e2a-adapter-api') &&
+      !it.name.startsWith('e2a-adapter-impl') &&
+      !it.name.startsWith('api') &&
+      !it.name.startsWith('datahub-adapter') &&
+      !it.name.startsWith('e2na-analytics-integration') &&
+      !it.name.startsWith('xmldiff'))
+  {
+    def proj = it.name
+    task copyDeps << {
+      // for each configuration defined in the project, if it's NOT used for testing, collect it's dependent jars
+      configurations.each { con ->
+        if (!(con =~ /test/)) {
+          println "Collecting from: $con"
+          copy {
+            from con
+            into libfiles
+            //into "${libfiles}/${proj}"
+            //eachFile {println it.name}
+          }
+        }
+      }
+    }
+  }
+}
+
+
+configurations {
+    imLib
+    cognosLib
+    jaxbLib
+    jaxpLib
+    jaxpEndorsedLib
+    pa_sdkLib
+    platformCpcCommonLib
+    platformCpcLoggingLib
+    platformCpcMonitoringLib
+    platformThirdPartyLib    
+    replLib
+}
+
+dependencies {
+     imLib ("javax.activation:activation:1.1")  {transitive = false }
+     imLib ("org.antlr:antlr:3.2")  {transitive = false }
+     imLib ("com.ibm.cognos:cognos-axis:10.2.2")  {transitive = false }
+     imLib ("com.ibm.cognos:cognos-sdk:10.2.2")  {transitive = false }
+     imLib ("com.ibm.cognos:cognos-access-manager:10.2.2")  {transitive = false }     
+     imLib ("org.codehaus.castor:castor:0.9.5.2")  {transitive = false }     
+     imLib ("commons-beanutils:commons-beanutils:1.9.3")  {transitive = false }          
+     imLib ("commons-collections:commons-collections:3.2.2")  {transitive = false }               
+     imLib ("commons-digester:commons-digester:1.8")  {transitive = false }               
+     imLib ("commons-discovery:commons-discovery:0.2")  {transitive = false }                    
+     imLib ("commons-logging:commons-logging:1.0.4")  {transitive = false }    
+     imLib ("commons-pool:commons-pool:1.1")  {transitive = false }                                   
+     imLib ("commons-validator:commons-validator:1.3.0")  {transitive = false }    
+     imLib ("concurrent:concurrent:1.3.4")  {transitive = false }         
+     imLib ("oro:jakarta-oro:2.0.7")  {transitive = false }              
+     imLib ("javax.xml:jaxrpc-api:1.1")  {transitive = false }
+     imLib ("javax.sql:jdbc-stdext:2.0")  {transitive = false }                   
+     imLib ("com.sun.jmx:jmxri:1.2.1")  {transitive = false }                        
+     imLib ("com.sun.jdmk:jmxtools:1.2.1")  {transitive = false }                             
+     imLib ("javax.transaction:jta:1.0.1B")  {transitive = false }          
+     imLib ("junit:junit:4.0")  {transitive = false }               
+     imLib ("log4j:log4j:1.2.15")  {transitive = false }                    
+     imLib ("javax.mail:mail:1.4.7")  {transitive = false }                         
+     imLib ("poolman:poolman:2")  {transitive = false }                              
+     imLib ("javax.xml:saaj:1.1")  {transitive = false }                              
+     imLib ("com.e2open:soap:1.0")  {transitive = false }
+     imLib ("org.apache.velocity:velocity:1.3.1")  {transitive = false }          
+     imLib ("wsdl4j:wsdl4j:1.5.1")  {transitive = false }                                             
+     imLib ("com.ibm.cognos:cognos-axis:10.2.2")  {transitive = false }
+     imLib ("org.java-websocket:Java-WebSocket:1.3.0") {transitive = false }
+
+     cognosLib ("commons-discovery:commons-discovery:0.2") { transitive = false }
+     cognosLib ("commons-logging:commons-logging:1.1")  {transitive = false }     
+     cognosLib ("dom4j:dom4j:1.6.1")  {transitive = false }          
+     cognosLib ("jaxen:jaxen:1.1.1")  {transitive = false }          
+     cognosLib ("javax.xml:jaxrpc-api:1.1")  {transitive = false }          
+     cognosLib ("javax.xml:saaj:1.1")  {transitive = false }                                   
+     cognosLib ("xalan:xalan:2.7.2")  {transitive = false }     
+     cognosLib ("xml-apis:xml-apis:1.3.04")  {transitive = false }
+
+     jaxbLib ("javax.xml:jax-qname:1.1")  {transitive = false }       
+     jaxbLib ("javax.xml.bind:jaxb-api:2.2.7")  {transitive = false }            
+     jaxbLib ("com.sun.xml.bind:jaxb-impl:2.2.7")  {transitive = false }                 
+     jaxbLib ("com.sun.msv:jaxb-libs:1.0.4")  {transitive = false }                      
+     jaxbLib ("com.sun.xml.bind:jaxb-xjc:2.2.7")  {transitive = false }                      
+     jaxbLib ("javax.xml:namespace:1.0.1")  {transitive = false }                 
+     jaxbLib ("activesoap:relaxngDatatype:1.5")  {transitive = false }                      
+     jaxbLib ("activesoap:xsdlib:1.5")  {transitive = false }                           
+
+     jaxpEndorsedLib ("dom4j:dom4j:1.6.1")  {transitive = false }                                
+     jaxpEndorsedLib ("sax:sax:2.0")  {transitive = false }                                     
+     jaxpEndorsedLib ("xalan:xalan:2.7.2")  {transitive = false }          
+     jaxpEndorsedLib ("xerces:xercesImpl:2.12.0")  {transitive = false }
+
+     jaxpLib ("javax.xml:jaxp-api:1.3.1")  {transitive = false }                 
+
+     pa_sdkLib ("commons-discovery:commons-discovery:0.2") { transitive = false }     
+     pa_sdkLib ("commons-logging:commons-logging:1.1")  {transitive = false }     
+     pa_sdkLib ("jboss:jbossall-client:4.2.3.GA")  {transitive = false }          
+     pa_sdkLib ("log4j:log4j:1.2.8")  {transitive = false }          
+
+     platformCpcCommonLib ("com.e2open.platform.cpc:cpc-common:18.4-1829") {transitive = false }          
+     platformCpcCommonLib ("com.e2open.platform.cpc:cpc-configuration-security:18.4-1829") {transitive = false }               
+     platformCpcCommonLib ("com.e2open.platform.cpc:e2common-ejb:10.0-1810") {transitive = false }          
+     platformCpcCommonLib ("com.sun.xml.bind:jaxb1-impl:2.1.13") {transitive = false }
+     platformCpcLoggingLib ("com.e2open.platform.cpc:cpc-logging:10.0-1810") {transitive = false }
+     platformCpcMonitoringLib ("backport-util-concurrent:backport-util-concurrent:3.1") {transitive = false }     
+     platformCpcMonitoringLib ("com.e2open.platform.cpc:cpc-monitoring:10.0-1810") {transitive = false }     
+
+     platformThirdPartyLib ("javax.activation:activation:1.1")  {transitive = false }     
+     platformThirdPartyLib ("javax.xml.bind:jaxb-api:2.2.7")  {transitive = false }               
+     platformThirdPartyLib ("com.sun.xml.bind:jaxb-impl:2.2.7")  {transitive = false }                    
+     platformThirdPartyLib ("com.sun.xml.bind:jaxb-xjc:2.2.7")  {transitive = false }                         
+     platformThirdPartyLib ("javax.xml.bind:jsr173_api:1.0")  {transitive = false }                
+     platformThirdPartyLib ("stax:stax-api:1.0")  {transitive = false }                     
+
+     replLib ("net.sf.ehcache:ehcache:1.5.0")  {transitive = false }                          
+     replLib ("org.hibernate:hibernate-annotations:3.4.0.GA")  {transitive = false }                    
+     replLib ("org.hibernate:hibernate-entitymanager:3.4.0.GA")  {transitive = false }                 
+}
+
+
+task downloadCognosLib( type: Copy) {
+     from configurations.cognosLib
+     into 'im/lib/cognos'
+     }
+
+task downloadJaxbLib( type: Copy) {       
+     from configurations.jaxbLib
+     into 'im/lib/jaxb/lib'
+     }
+
+task downloadJaxpLib( type: Copy) {       
+     from configurations.jaxpLib
+     into 'im/lib/jaxp/lib'
+     }
+
+task downloadJaxpEndorsedLib( type: Copy) {       
+     from configurations.jaxpEndorsedLib
+     into 'im/lib/jaxp/lib/endorsed'
+     }
+
+task downloadPaSdkLib( type: Copy) {
+     from configurations.pa_sdkLib
+     into 'im/lib/pa_sdk'
+     }
+
+task downloadReplLib( type: Copy) {
+     from configurations.replLib
+     into 'im/lib/repl'
+     }
+
+task downloadPlatformCpcCommonLib( type: Copy) {
+     from configurations.platformCpcCommonLib
+     into 'im/lib/platform/cpc/common/lib'
+     }
+
+task downloadPlatformCpcLoggingLib( type: Copy) {
+     from configurations.platformCpcLoggingLib
+     into 'im/lib/platform/cpc/logging/lib'
+     }
+
+task downloadPlatformCpcMonitoringLib( type: Copy) {
+     from configurations.platformCpcMonitoringLib
+     into 'im/lib/platform/cpc/monitoring/lib'
+     }
+
+task downloadPlatformThirdPartyLib( type: Copy) {
+     from configurations.platformThirdPartyLib
+     into 'im/lib/platform/third-party/jboss/jboss-4.2.2/lib'
+     }
+
+
+task downloadImLib( type: Copy, dependsOn: [downloadCognosLib,
+                                            downloadPlatformCpcCommonLib,
+                                            downloadPlatformCpcLoggingLib,
+                                            downloadPlatformCpcMonitoringLib,
+                                            downloadPlatformThirdPartyLib,
+                                            downloadJaxbLib,
+                                            downloadJaxpLib,
+                                            downloadJaxpEndorsedLib,                                            
+                                            downloadPaSdkLib,
+                                            downloadReplLib] ) {
+     from configurations.imLib
+     into 'im/lib'
+}
+
+task downloadUnityZipFile(type: Download) {
+    src 'https://artifactory.dev.e2open.com/artifactory/api/npm/npm-all/e2open-design-system/-/e2open-design-system-2.2.2-alpha.178.tgz'
+    dest new File("$buildDir/unity", 'unity.tgz')
+}
+
+task downloadJqueryZipFile(type: Download) {
+    src 'https://artifactory.dev.e2open.com/artifactory/api/npm/npm-all/jquery/-/jquery-3.3.1.tgz'
+    dest new File("$buildDir/jquery", 'jquery.tgz')
+}
+
+task downloadAndUnzipUnityFile(dependsOn: downloadUnityZipFile, type: Copy) {
+    from tarTree(downloadUnityZipFile.dest)
+    into "$buildDir/unity"
+}
+
+task downloadAndUnzipJqueryFile(dependsOn: downloadJqueryZipFile, type: Copy) {
+    from tarTree(downloadJqueryZipFile.dest)
+    into "$buildDir/jquery"
+}
+
+task prepareUnityFiles(dependsOn: [downloadAndUnzipUnityFile, downloadAndUnzipJqueryFile], type: Copy) {
+    into("${packageRoot}/src/home")
+
+    into("js") {
+      from("${packageRoot}/../target/unity/package/dist/js") {
+      	include "babel-polyfill.min.js"
+        include "edl.min.js"
+      }
+      from("${packageRoot}/../target/jquery/package/dist") {
+        include "jquery.min.js"
+        include "jquery.min.map"
+      }
+    }
+    into("css") {
+      from("${packageRoot}/../target/unity/package/dist/css") {
+        include "edl.min.css"
+        include "fonts/**"
+      }
+    }
+}
+
+clean.delete(downloadImLib.outputs.files)
+
+task imJar(type: Jar, dependsOn: subprojects.classes) {
+    archiveName = "im.jar"
+    destinationDir = buildLib
+    from(serverClasses)
+    include([
+            "com/e2open/common/**/*",
+            "com/e2open/im/**/*",
+            "com/e2open/monitoring/*",
+    ])
+    exclude([
+            "com/e2open/im/agent/**/*",
+            "com/e2open/im/agt/**/*",
+            "com/e2open/im/etl/**/*",
+            "com/e2open/im/server/etl/**/*"
+    ]);
+    from("${packageRoot}/src/jsp")
+}
+
+task imEtlJar(type: Jar, dependsOn: subprojects.classes) {
+    archiveName = "im-etl.jar"
+    destinationDir = buildLib
+    from(serverClasses)
+    include([
+            "com/e2open/im/**/*",
+            "org/apache/axis/types/*",
+    ])
+    exclude([
+            "com/e2open/im/agent/**/*",
+            "com/e2open/im/agt/**/*",
+            "com/e2open/im/beans/**/*",
+            "com/e2open/im/search/**/*",
+            "com/e2open/im/tools/**/*",
+            "com/e2open/im/ui/**/*",
+            "com/e2open/im/ws/**/*",
+            "com/e2open/im/wsdl/**/*",
+    ])
+}
+
+//task agentJar(type: Jar, dependsOn: subprojects.classes) {
+//    archiveName = "agent.jar"
+//    destinationDir = buildLib
+//    from 'etl/target/classes/main'
+//    from('etl/target/classes/main') {
+//        include([
+//                "com/e2open/im/*",
+//                "com/e2open/im/agt/**/*",
+//                "com/e2open/im/mbean/**/*",
+//                "com/e2open/im/migration/**/*",
+//                "com/e2open/im/monitoring/**/*",
+//                "com/e2open/im/types/**/*",
+//                "com/e2open/im/util/**/*",
+//                "com/e2open/monitoring/*",
+//        ]);
+//    }
+//}
+
+task toolsJar(type: Jar, dependsOn: subprojects.classes) {
+    archiveName = "im-tools.jar"
+    destinationDir = buildLib
+    from(serverClasses)
+    include([
+            "com/e2open/im/*",
+            "com/e2open/im/agt/**/*",
+            "com/e2open/im/etl/**/*",
+            "com/e2open/im/evt/**/*",
+            "com/e2open/im/tools/**/*",
+            "com/e2open/im/types/**/*",
+            "com/e2open/im/util/**/*",
+            "org/apache/axis/types/*",
+    ])
+}
+
+task imwsClientJar(type: Jar, dependsOn: subprojects.classes) {
+    archiveName = "imws-client.jar"
+    destinationDir = buildLib
+    from serverClasses
+    include([
+            "com/e2open/common/ws/types/**/*",
+            "com/e2open/im/*",
+            "com/e2open/im/util/*",
+            "com/e2open/im/ws/*",
+            "com/e2open/im/ws/client/*",
+            "com/e2open/im/ws/types/**/*",
+    ])
+    exclude("com/e2open/im/agt/**/*")
+}
+
+task imToolsJar(type: Jar, dependsOn: subprojects.classes) {
+    archiveName = 'im-tools.jar'
+    destinationDir = buildLib
+    from('server/target/classes/main') {
+        include("org/apache/axis/types/*")
+        include("com/e2open/im/*")
+        include("com/e2open/im/types/**/*")
+        include("com/e2open/im/util/**/*")
+        include("com/e2open/im/etl/**/*")
+        include("com/e2open/im/evt/**/*")
+        include("com/e2open/im/tools/**/*")
+        include("com/e2open/im/agt/**/*")
+    }
+}
+
+task camAaaImJar(type: Jar, dependsOn: subprojects.classes) {
+    archiveName = "CAM_AAA_IM.jar"
+    destinationDir = buildLib
+    from("customauth/target/classes/main")
+    include("com/e2open/im/cognos/customauth/**/*")
+    manifest {
+        attributes("Manifest-version": "1.0",
+                "Specification-Title": "Cognos 8 Custom Provider SDK",
+                "Specification-Version": "1.1",
+                "Specification-Vendor": "Cognos Inc.")
+    }
+}
+
+task xmlDiffJar(type: Jar, dependsOn: subprojects.classes) {
+    archiveName = "xmldiff.jar"
+    destinationDir = buildLib
+    from("xmldiff/target/classes/main")
+}
+
+task jars(dependsOn: [
+        imJar,
+        imEtlJar,
+        ':agent:jar',
+        imwsClientJar,
+        imToolsJar,
+        camAaaImJar,
+        xmlDiffJar,
+        ':common:jar',
+	':e2a-adapter-impl:customE2aAdapterZip'
+])
+
+task buildZipTmp(type: Copy) {
+    into(zipTmp)
+    from("${packageRoot}/src") {
+        exclude([
+                "html",
+                "html/**/*",
+                "java/**/*",
+                "jsp",
+                "jsp/**/*",
+                "report/**/*",
+        ]);
+    }
+
+    // Include html and jsp at top level
+    from("${packageRoot}/src/html")
+    from("${packageRoot}/src/jsp")
+}
+
+task imZip(type: Zip) {
+    destinationDir = buildLib
+    archiveName = "im.zip"
+    from(buildSrc) {
+        exclude "report/**/*"
+        exclude "java/**/*"
+        exclude "jsp/**/*"
+        exclude "html/**/*"
+    }
+
+    from("${buildSrc}/html") {
+        include "html"
+        include "jsp"
+    }
+
+}
+
+task imDesignerSeedZip(type: Zip) {
+    destinationDir = buildLib
+    archiveName = "im_designer_seed.zip"
+    from "${baseDatasetSrc}"
+
+    into("imagap-data/cfg.replace") {
+        from("${packageRoot}/cfg/agent") {
+            include "*.properties"
+            include "agent.xml"
+        }
+    }
+    into("imgap-data/dataset") {
+        from("${packageRoot}/installer/im/hubs/org6/imgap-data/dataset") {
+            include "im_*.txt"
+            include "users.txt"
+            include "usro.txt"
+        }
+    }
+
+    into("imgap-data/cognos") {
+        from("${packageRoot}/installer/im/hubs/org6/imgap-data/cognos")
+    }
+    into("META-INF/im") {
+        from("schema/oracle") {
+            include "*.sql"
+            include "*.xsl"
+        }
+    }
+}
+
+task zips(dependsOn: [imZip, imDesignerSeedZip])
+
+task pkgdirDefined() << {
+    if (!tmNativeE2scInstaller || !platformE2am) {
+        throw new InvalidUserDataException(
+                'Unable to locate TM-Native and e2am/platform.  Try adding "-Dpkgdir=<directory>" to the command line.')
+    }
+}
+
+task imWar(type: Jar,
+        dependsOn: [pkgdirDefined, downloadImLib, jars, ':cognos-sdk:assemble', prepareUnityFiles]) {
+
+    doFirst {
+        // else find . -name "i2uitaglib.tld" will fail, but it's supposed to end up in
+        // installer/im/webapps/im.ear/im.war/WEB-INF/tld/i2uitaglib.tld
+
+        def jwebPath = "${tmNativeE2scInstaller}/jweb/lib/jweb.zip"
+        println "jweb path = ${jwebPath}"
+        assert file(jwebPath).exists()
+
+        def e2uitaglibPath = "${platformCpcE2uitaglib}/lib/e2uitaglib.zip"
+        println "e2uitaglib path = ${e2uitaglibPath}"
+        assert file(e2uitaglibPath).exists()
+
+        assert file("${platformCpcMonitoring}/lib").exists()
+        assert file("${platformCpcLogging}/lib").exists()
+        //assert file("${platformCpcCommon}/lib").exists()
+    }
+
+    destinationDir = buildLib
+    archiveName = "im.war"
+
+    from("${packageRoot}/src/jsp")
+    from("${packageRoot}/src/html")
+
+    // include home directory
+    from("${packageRoot}/src") {
+        // already included at top level of WAR
+        exclude "jsp"
+        exclude "html"
+    }
+
+    from zipTree("${platformCpcE2uitaglib}/lib/e2uitaglib.zip")
+    from zipTree("${tmNativeE2scInstaller}/jweb/lib/jweb.zip")
+
+    into("WEB-INF") {
+        from "${packageRoot}/cfg/server/pa_sdk"
+        from "${packageRoot}/cfg/server/server-config.wsdd"
+    }
+
+    into("WEB-INF/lib") {
+        from("${platformCpcMonitoring}/lib") {
+            include "*.jar"
+        }
+
+        from("${platformCpcLogging}/lib") {
+            include "*.jar"
+            exclude "log4j-1.2.8.jar"
+        }
+
+        from(buildLib) {
+            include(["im.jar", "im-etl.jar"])
+        }
+        from("common/target/libs") {
+            include "common*.jar"
+        }
+        from("qlik-manager/target/libs") {
+            include "qlik-manager*.jar"
+        }
+        from("cognos-sdk/target/libs") {
+            include "cognos-sdk*.jar"
+        }
+
+
+        from("${tmNativeE2scInstaller}/jweb/lib") {
+            include "jweb.jar"
+        }
+
+        from("${platformCpcE2uitaglib}/lib/") {
+            include "e2uitaglib.jar"
+        }
+
+        from("${packageRoot}/lib") {
+            include "*.jar"
+            exclude "jdbc-stdext-2.0.jar"
+            exclude "Tidy.jar"
+            exclude "servlet.jar"
+            exclude "xerces-2.2.1.jar"
+            exclude "commons-logging-1.0.4.jar"
+            exclude "log4j-1.2.15.jar"
+            //exclude "poolman-2.jar"
+        }
+
+        from("${packageRoot}/lib/cognos") {
+            include "axisCognosClient.jar"
+            include "CAM_AAA_CustomIF.jar"
+            //include "commons-logging-1.1.jar"
+            include "commons-logging-adapters-1.1.jar"
+            include "commons-logging-api-1.1.jar"
+            include "dom4j-1.6.1.jar"
+            include "jaxen-1.1.1.jar"
+            include "xalan-2.7.2.jar"
+            include "xml-apis-1.3.04.jar"
+        }
+
+        from("${packageRoot}/lib/pa_sdk") {
+            exclude "**/commons-logging.jar" // already in ${packageRoot}/lib
+            exclude "**/commons-logging-1.1.jar" // already in ${packageRoot}/lib 
+            exclude "**/commons-discovery.jar"
+            exclude "**/iaspi4.jar"
+            exclude "**/log4j-1.2.8.jar"
+        }
+
+        from configurations.cpcCommonJar
+        from configurations.jaxb1ImplJars
+        from configurations.struts2Jar
+        from configurations.struts2TagLibJar
+        from configurations.serializerJar
+        
+        from configurations.commonsHttpClientJar
+        from configurations.commonsFileUploadJar
+        from configurations.commonsLangJar
+        from configurations.mbeanCommonJar
+        
+	from configurations.ip2LocationJars
+	from configurations.jacksonJars
+
+        from("lib/pa_sdk") {
+            exclude "**/commons-logging.jar" // already in ${packageRoot}/lib
+            exclude "**/commons-logging-1.1.jar" // already in ${packageRoot}/lib 
+            exclude "**/commons-discovery.jar"
+            exclude "**/iaspi4.jar"
+            exclude "**/log4j-1.2.8.jar"
+        }
+        from("lib/cognos") {
+            exclude "**/commons-logging-1.1.jar" // already in ${packageRoot}/lib 
+        }
+    }
+}
+
+task war(dependsOn: [imWar])
+
+task pkg(dependsOn: [war])
+
+def copyBuildInfo = copySpec {
+    def substitutions = [VERSION  : version,
+                         BUILDHOST: hostname,
+                         BUILDNUM : buildnum,
+                         BUILDTIME: buildTime,
+                         BUILDDATE: buildDate,
+    ]
+
+    from("${packageRoot}/sysbuild/build_info.properties") {
+        filter { line ->
+            line.replaceAll('@([A-Z]*)@', { match ->
+                def key = match[1]
+                substitutions[key] ?: key
+            })
+        }
+    }
+}
+
+// Weird task to copy .template files to non-template files
+
+task configMonitoringPrep(type: Copy) {
+    into("${packageRoot}/cfg")
+
+    into("server") {
+        from("${packageRoot}/cfg/server/IMServerMonitor.xml.template") {
+            rename { "IMServerMonitor.xml" }
+        }
+    }
+
+    into("agent") {
+        from("${packageRoot}/cfg/agent/IMAgentMonitor.xml.template") {
+            rename { "IMAgentMonitor.xml" }
+        }
+    }
+}
+
+task configMonitoring(dependsOn: configMonitoringPrep) {
+    outputs.files("${packageRoot}/cfg/server/im-MonitoringEvents.xml",
+            "${packageRoot}/cfg/agent/ima-MonitoringEvents.xml"
+    )
+    doLast {
+        ant.xslt(destdir: "${packageRoot}/server",
+                in: "${packageRoot}/cfg/server/IMServerMonitor.xml",
+                out: "${packageRoot}/cfg/server/im-MonitoringEvents.xml",
+                style: "${packageRoot}/src/xsl/IMMonitoringEvents.xsl")
+        ant.xslt(destdir: "${packageRoot}/agent",
+                in: "${packageRoot}/cfg/agent/IMAgentMonitor.xml",
+                out: "${packageRoot}/cfg/agent/ima-MonitoringEvents.xml",
+                style: "${packageRoot}/src/xsl/IMMonitoringEvents.xsl")
+    }
+}
+
+clean.delete(configMonitoring.outputs.files)
+
+["dataset",
+ "build.xml",
+ "cfg/",
+ "cognos1022/webapps/p2pd/WEB-INF/lib/",
+ "im_war/",
+ "installagent.properties.template",
+ "lib/",
+ "schema/",
+ "scripts/scripts.jar",
+ "webapps/im.ear/im.sar/cpc-common.jar",
+ "webapps/im.ear/im.sar/im.jar",
+ "webapps/im.ear/im.sar/junit.jar",
+ "webapps/im.ear/im.war/build.xml",
+ "webapps/im.ear/im.war/im.war",
+ "webapps/im.ear/lib/",
+ "e2a-adapter/",
+ "webapps/im.ear/sdk.war/", "xsd"].each { it ->
+    clean.delete("${installer}/im/$it")
+}
+
+
+
+task prepareIm(type: Copy, dependsOn: [configMonitoring, jars, downloadImLib, ':rest:war', ':server:war', ':scripts:applicationJar']) {
+    into "${installer}/im"
+    // note:  this doesn't look right.  But for now, copied from ant build as-is.
+    from "${installer}/imAgent_jboss/installagent.properties.template"
+    from "${packageRoot}/build.xml"
+
+    into("dataset") {
+        from "dataset"
+    }
+
+    into("cognos1022/webapps/p2pd/WEB-INF/lib") {
+        from "im/build/lib/CAM_AAA_IM.jar"
+	// from configurations.p2pd
+        from "im/lib/poolman-2.jar"
+        //from "${platformCpcCommon}/lib/cpc-common.jar"
+        from configurations.cpcCommonJarForCognos
+    }
+
+    into("cfg") {
+        from("${packageRoot}/cfg/agent/agent.xml")
+        from("${packageRoot}/cfg/cluster.xml")
+        from("${packageRoot}/cfg/server") {
+            exclude "server-config.wsdd"
+            exclude "pa_sdk/**"
+            exclude "pa_sdk"
+        }
+        from("${packageRoot}/agent/agent.xml")
+
+        from("${packageRoot}/cfg/server") {
+            include "IMServerMonitor.xml"
+            include "im-MonitoringEvents.xml"
+            include 'etl_workflow.xml'
+            include 'events.xml'
+            include 'ImBundle_es_ES.properties'
+            include 'ImBundle_ja_JP.properties'
+            include 'ImBundle.properties'
+            include 'IMServerMonitor.xml.template'
+            include 'ImWeb.properties'
+            include 'log4j.xml'
+            include 'server.properties'
+        }
+        with copyBuildInfo
+    }
+
+    into("im_war") {
+        from("im/cfg/server/pa_sdk/iaspi4.properties")
+        from "${packageRoot}/server/pa_sdk/iaspi4.properties"
+        from "${packageRoot}/src/WEB-INF/web.xml"
+        from "${packageRoot}/server/log4j.xml"
+        into("classes") {
+            from("im/cfg/server/log4j.xml")
+            from("im/cfg/server/struts.xml")
+        }
+    }
+
+    into("lib") {
+        from(buildLib) {
+            include "im.jar"
+            include "im-etl.jar"
+        }
+        from "${tmNativeE2scInstaller}/jweb/lib/jweb.jar"
+        from("im/lib") {
+            include "*.zip"
+            include "*.jar"
+            exclude "Tidy.jar"
+            exclude "servlet.jar"
+            exclude "xerces.jar"
+            exclude "commons-logging-1.0.4.jar"
+            //exclude "poolman-2.jar"
+        }
+        from("im/lib/jaxb/lib") {
+            exclude "jaxb-xjc.jar"
+        }
+        from("qlik-manager/target/libs") {
+            include "qlik-manager*.jar"
+        }
+    }
+
+    into("lib/bom") {
+        from('im/lib') {
+            include 'activation.jar'
+            //include 'axis.jar'
+            include 'cognos-axis-10.2.2.jar'
+            include 'commons-discovery.jar'
+            include 'commons-logging.jar'
+            include 'imws-client.jar'
+            include 'jaxrpc-api-1.1.jar'
+            include 'log4j.jar'
+            include 'mail.jar'
+            include 'rmissl.jar'
+            include 'saaj.jar'
+            include 'soap.jar'
+        }
+        from('im/build/lib/imws-client.jar')
+        from('im/lib/jaxp/lib/endorsed') {
+            exclude 'xalan.jar'
+        }
+        from('im/lib/jaxb/lib')
+    }
+
+    into("lib/cognos/publish") {
+        from("im/lib/cognos/") {
+            include "*.jar"
+        }
+        from "${buildLib}/xmldiff.jar"
+    }
+
+    into("schema") {
+        from("schema") {
+            exclude "**/*.ER1"
+            exclude "xsd/agent/**/*"
+            exclude "xsd/server/**/*"
+            exclude "xsd/agent"
+            exclude "xsd/server"
+            exclude "**/ctl/**/*"
+            exclude "**/ctl"
+        }
+        from("server/src/main/jaxb") {
+            include "*.xsd"
+        }
+        into("db2") {
+            from "schema/db2/etl_procedures.sql"
+            into("ctl") {
+                from("schema/db2/ctl") {
+                    exclude "server/*"
+                    exclude "server"
+                    exclude "agent/*"
+                    exclude "agent"
+                }
+                from "schema/db2/ctl/server"
+            }
+        }
+
+        into("oracle") {
+            from "schema/oracle/etl_procedures.sql"
+            into("ctl") {
+                from("schema/oracle/ctl") {
+                    exclude "agent/*"
+                }
+            }
+        }
+    }
+
+    into("scripts") {
+        from "scripts/target/libs/scripts.jar"
+    }
+
+    into("webapps/im.ear/im.war") {
+        from "${buildLib}/im.war"
+        from "${installer}/xml/war/build.xml"
+    }
+
+    into("webapps/im.ear/rest.war") {
+        from zipTree("rest/target/libs/rest.war")
+    }
+
+    into("webapps/im.ear/im.sar") {
+        // Monitoring has been moved from im to common
+        from("common/target/libs") {
+            include "common*.jar"
+        }
+        from "im/lib/junit.jar"
+        from configurations.cpcCommonJar
+    }
+    
+    into("xsd") {
+        from "server/src/main/jaxb/server"
+    }
+
+    doFirst {
+        new File("${installer}/im/webapps/im.ear/lib").mkdirs()
+    }
+
+}
+
+if (onWindows) {
+    task copySpokeLib
+    task copyInstallerFiles
+} else {
+    clean.delete(fileTree("${packageRoot}/im_spoke/lib", { include '*' }))
+
+    task copySpokeLib(type: Copy) {
+        into "${packageRoot}/im_spoke/lib"
+        from "${tmNativeE2scInstaller}/e2spoke/lib"
+    }
+}
+
+[
+        "build.xml",
+        "cfg",
+        "im_spoke",
+        "install.im.properties.template",
+        "lib",
+        "schema",
+        "webapps/imAgent_jboss.ear/imAgent_jboss.sar/agent.jar",
+        "webapps/imAgent_jboss.ear/imAgent_jboss.sar/cpc-common.jar",
+        "webapps/imAgent_jboss.ear/imAgent_jboss.sar/junit.jar",
+        "webapps/imAgent_jboss.ear/imAgent_jboss.war/WEB-INF/classes",
+        "webapps/imAgent_jboss.ear/imAgent_jboss.war/WEB-INF/lib",
+        "webapps/imAgent_jboss.ear/imAgent_jboss.war/WEB-INF/web.xml",
+        "webapps/imAgent_jboss.ear/imAgent_jboss.war/im-agent.jar",
+        "xsd"
+].each {
+    clean.delete("${stagingAgent}/$it")
+}
+
+task prepareAgent(type: Copy, dependsOn: [jars,downloadImLib, configMonitoring, ':agent:war', ':agent:jar', copySpokeLib]) {
+
+    into stagingAgent
+    from "im/installer/im/install.im.properties.template"
+    from "${packageRoot}/build.xml"
+
+    into('cfg') {
+        from "${packageRoot}/cfg/cluster.xml"
+        from "${packageRoot}/cfg/agent"
+        with copyBuildInfo
+    }
+
+    into('xsd') {
+        from 'server/src/main/jaxb/agent'
+    }
+
+    into('lib') {
+        from("${buildLib}/agent.jar")
+        from("${tmNativeE2scInstaller}/jweb/lib/jweb.jar")
+        from("${packageRoot}/lib") {
+            include "*.zip"
+            include "*.jar"
+            exclude "servlet.jar"
+            exclude "Tidy.jar"
+        }
+        from("${packageRoot}/lib/jaxb/lib") {
+            exclude "**/jaxb-xjc-2.2.7.jar"
+        }
+        from "${packageRoot}/lib/pa_sdk/jbossall-client-4.2.3.GA.jar"
+    }
+
+    into("schema/db2/ctl") {
+        from "schema/db2/ctl/agent/pit_snapshot.ctl"
+    }
+
+    into("schema/oracle/ctl") {
+        from "schema/oracle/ctl/agent/pit_snapshot.ctl"
+    }
+
+    into("im_spoke") {
+        from("${packageRoot}/im_spoke")
+    }
+
+    into("webapps/imAgent_jboss.ear/imAgent_jboss.war") {
+        from zipTree("agent/target/libs/agent.war")
+        //exclude "**/poolman-2.jar"
+        exclude "**/servlet*.jar"
+        exclude "**/struts*.jar"
+    }
+    
+    into("webapps/imAgent_jboss.ear") {
+        into("imAgent_jboss.sar") {
+            from("common/target/libs") {
+                include "common*.jar"
+            }
+            from("agent/target/libs") {
+                include "agent*.jar"
+            }
+            from("${packageRoot}/lib/junit-4.0.jar")
+            from("${packageRoot}/lib/platform/cpc/common/lib/cpc-common-18.4-1829.jar")
+            from("${packageRoot}/lib/platform/cpc/common/lib/cpc-configuration-security-18.4-1829.jar")
+        }
+    }
+}
+
+[
+    "dist"
+].each {
+    clean.delete("${stagingE2aAdapter}/$it")
+}
+
+task prepareE2aAdapter(type: Copy, dependsOn: [jars, configMonitoring]) {
+
+    into stagingE2aAdapter
+    
+    into("dist") {
+    	from("${e2aAdapterImplRoot}/target") {
+    		include "e2a-adapter*.zip"
+    	}
+    }
+}
+
+task prepare(dependsOn: [pkg,
+                         prepareIm,
+                         prepareAgent,
+                         prepareE2aAdapter,
+                         zips,
+])
+
+task buildTar(type: Tar, dependsOn: prepare) {
+    destinationDir = packageRoot
+    archiveName = "gradle-build.tar.gz"
+    compression = Compression.GZIP
+    from(build)
+}
+
+task ('scaClean') {
+
+   description "Clean the HP Fortify environment before running a scan."
+
+        doLast {
+          def sourceCompatibility='1.7'
+
+          // run the external executable to do a 'clean'
+          println "SCA CLEAN"
+          def commandLine = ['sourceanalyzer', '-b', buildId, '-clean']
+          def process = new ProcessBuilder(commandLine)
+                                    .directory(new File("."))
+                                    .redirectErrorStream(true) 
+                                    .start()
+          process.inputStream.eachLine {println it}
+          process.waitFor();
+          // fail the build if the return value is non-zero
+          assert process.exitValue() == 0
+  }
+}
+
+// define a task to run an HP Fortify Scan on the JSP files
+task ('jsp') {
+
+   description "Run an HP Fortify Scan on the JSP files"
+
+        doLast {
+          def sourceCompatibility='1.7'
+
+          // *********************************************************************************
+          // run the external executable to do a 'translate'
+          println "SCA TRANSLATE"
+
+          def commandLine = ['sourceanalyzer', '-verbose', '-debug', '-b', buildId, '-source', sourceCompatibility, 'im/src/jsp/**/*.jsp']
+
+          def process = new ProcessBuilder(commandLine)
+                                    .directory(new File("."))
+                                    .redirectErrorStream(true) 
+                                    .start()
+          process.inputStream.eachLine {println it}
+          process.waitFor();
+          // fail the build if the return value is non-zero
+          assert process.exitValue() == 0
+        }
+      }
+
+// define a task to run an HP Fortify Scan on the JavaScript files
+task ('js') {
+
+   description "Run an HP Fortify Scan on the JavaScript files"
+
+        doLast {
+          def sourceCompatibility='1.7'
+
+          // *********************************************************************************
+          // run the external executable to do a 'translate'
+          println "SCA TRANSLATE"
+
+          def commandLine = ['sourceanalyzer', '-verbose', '-debug', '-b', buildId, '-source', sourceCompatibility, 'im/src/html/*.js','im/src/js/util/*.js']
+
+          def process = new ProcessBuilder(commandLine)
+                                    .directory(new File("."))
+                                    .redirectErrorStream(true) 
+                                    .start()
+          process.inputStream.eachLine {println it}
+          process.waitFor();
+          // fail the build if the return value is non-zero
+          assert process.exitValue() == 0
+        }
+      }
+
+
+// define a task to schedule an analysis of all the scanned files
+task ('mbs') {
+
+  description "Export mobile build session (mbs)."
+
+  doLast {
+
+      // *********************************************************************************
+      // run the external executable to do an 'export-build-session'
+      println "SCA EXPORT"
+
+      // make sure the target/fortify folder exists
+      def fortifyBuildFolder = 'target/fortify'
+      new File(fortifyBuildFolder).mkdirs()
+
+      def commandLine = ['sourceanalyzer', '-verbose', '-debug', '-b', buildId, '-export-build-session', 'target/fortify/im.mbs']
+
+      def process = new ProcessBuilder(commandLine)
+                                    .directory(new File("."))
+                                    .redirectErrorStream(true) 
+                                    .start()
+      process.inputStream.eachLine {println it}
+      process.waitFor();
+      // fail the build if the return value is non-zero
+      assert process.exitValue() == 0
+
+  }
+}
+
+clean.delete(buildTar.outputs.files)
+
+if (!onWindows && !onMac) {
+    ant.RUNTIME_DIR = platformE2am
+
+    task installerTar(type: Tar, dependsOn: [prepare]) {
+        destinationDir = packageRoot
+        archiveName = 'gradle-installer.tar.gz'
+        compression = Compression.GZIP
+        from(installer)
+    }
+
+    clean.delete(installerTar.outputs.files)
+
+    task makeBambooArtifacts(dependsOn: [buildTar, installerTar])
+
+    task makePkg(dependsOn: prepare) << {
+        def user = System.env.USER ?: System.properties['user.name']
+        def pkgpath = System.properties.pkgpath ?: "/e2open/pkgs"
+        def pkgdir = System.properties.pkgdir ?: "${pkgpath}/personal/${user}/im/build/${buildnum}"
+        def topdir = System.properties.topdir ?: file('.').getCanonicalPath()
+
+        copy {
+            into "${pkgdir}/im/im-tools/lib"
+            from "im/build/lib/im-tools.jar"
+        }
+
+        copy {
+            into "${pkgdir}/im/im_designer_seed/lib"
+            from "im/build/lib/im_designer_seed.zip"
+        }
+
+        // Can't do this:  ant.importBuild 'devtools/targets/common.xml'
+        // Because of:  http://issues.gradle.org/browse/GRADLE-2039
+
+        ant.properties["lib.home"] = "im"
+        ant.properties['pkgpath'] = pkgpath
+        ant.properties["pkgdir_rel.default"] = "personal/$user"
+        ant.properties['pkgdir'] = pkgdir
+        ant.properties['topdir'] = topdir
+        ant.properties['buildnum'] = buildnum
+        ant.property(environment: "env")
+
+        println "pkgdir=$ant.properties.pkgdir topdir=$ant.properties.topdir buildnum=$ant.properties.buildnum"
+
+        // make im e2pkg
+        ant.properties['libdir'] = "lib/bom"
+        ant.properties['prefix'] = "e2open/app/im"
+        ant.ant(dir: "im/installer/im", antfile: "../../../devtools/targets/common.xml", target: "makedist")
+
+        // make imAgent_jboss e2pkg
+        ant.properties['prefix'] = "e2open/app/imAgent_jboss"
+        ant.properties['followsymlinks'] = "true"
+
+        ant.ant(dir: "im/installer/imAgent_jboss", antfile: "../../../devtools/targets/common.xml", target: "makedist")
+        
+                // make e2aAdapter e2pkg
+        ant.properties['prefix'] = "e2open/app/e2aAdapter"
+        ant.properties['followsymlinks'] = "true"
+
+        ant.ant(dir: "im/installer/e2aAdapter", antfile: "../../../devtools/targets/common.xml", target: "makedist")
+        
+        println "To install: ${ant.properties.topdir}/im/installer/im/scripts/Upgrade.gsh -p $buildnum"
+    }
+
+    task makedist(dependsOn: [subprojects.test, makePkg])
+}
